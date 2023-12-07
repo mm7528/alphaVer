@@ -5,14 +5,17 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.MediaStore;
 import android.view.View;
 import android.widget.Button;
@@ -37,6 +40,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.UUID;
 
 public class CameraActivity extends AppCompatActivity {
@@ -53,7 +60,8 @@ public class CameraActivity extends AppCompatActivity {
 
     private TextRecognizer textRecognizer;
 
-    private Uri filepath;
+    private String currentPath, lastFull;
+    private Uri imageUri;
     private StorageReference storageReference;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,7 +88,7 @@ public class CameraActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
 
-                if(filepath==null)
+                if(imageUri==null)
                 {
                     Toast.makeText(getApplicationContext(), "Take a picture first.", Toast.LENGTH_LONG).show();
                 }
@@ -96,7 +104,7 @@ public class CameraActivity extends AppCompatActivity {
     private void recognizeTextFromImage()
     {
         try {
-            InputImage inputImage = InputImage.fromFilePath(this,filepath);
+            InputImage inputImage = InputImage.fromFilePath(this,imageUri);
             Task<Text> textTaskResult = textRecognizer.process(inputImage)
                     .addOnSuccessListener(new OnSuccessListener<Text>() {
                         @Override
@@ -122,11 +130,11 @@ public class CameraActivity extends AppCompatActivity {
     {
         if(ContextCompat.checkSelfPermission(CameraActivity.this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED
-                || ContextCompat.checkSelfPermission(CameraActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE)!=
+                || ContextCompat.checkSelfPermission(CameraActivity.this, Manifest.permission.READ_EXTERNAL_STORAGE)!=
                 PackageManager.PERMISSION_GRANTED)
         {
             ActivityCompat.requestPermissions(CameraActivity.this, new String[]{
-                    Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    Manifest.permission.CAMERA, Manifest.permission.READ_EXTERNAL_STORAGE
             } ,OPEN_CAMERA_CODE);
         }
         else {
@@ -136,10 +144,23 @@ public class CameraActivity extends AppCompatActivity {
 
     }
     private void takeApic() {
-        Intent takePicIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        if (takePicIntent.resolveActivity(getPackageManager()) != null) {
-            Toast.makeText(getApplicationContext(), "picture taken", Toast.LENGTH_LONG).show();
-            startActivityForResult(takePicIntent,TAKE_A_PIC_CODE);
+
+        // creating local temporary file to store the full resolution photo
+        String filename = "tempfile";
+        File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        try {
+            File imgFile = File.createTempFile(filename,".jpg",storageDir);
+            currentPath = imgFile.getAbsolutePath();
+            imageUri = FileProvider.getUriForFile(CameraActivity.this,"com.example.alphaver.fileprovider",imgFile);
+            Intent takePicIntent = new Intent();
+            takePicIntent.setAction(MediaStore.ACTION_IMAGE_CAPTURE);
+            takePicIntent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT,imageUri);
+            if (takePicIntent.resolveActivity(getPackageManager()) != null) {
+                startActivityForResult(takePicIntent,TAKE_A_PIC_CODE);
+            }
+        } catch (IOException e) {
+            Toast.makeText(CameraActivity.this,"Failed to create temporary file",Toast.LENGTH_LONG);
+            throw new RuntimeException(e);
         }
 
     }
@@ -165,32 +186,29 @@ public class CameraActivity extends AppCompatActivity {
 
     private void uploadImage(Intent data)
     {
-        Bundle extras = data.getExtras();
-        Bitmap bitmap = (Bitmap) extras.get("data");
-        imageView.setImageBitmap(bitmap);
-        filepath = getImageUri(getApplicationContext(),bitmap);
-        if(filepath!=null)
-        {
-            StorageReference ref = storageReference.child("images/" + UUID.randomUUID().toString());
-            ref.putFile(filepath).addOnSuccessListener(new OnSuccessListener<UploadTask.TaskSnapshot>() {
-                @Override
-                public void onSuccess(UploadTask.TaskSnapshot taskSnapshot) {
-                    Toast.makeText(getApplicationContext(), "image uploaded", Toast.LENGTH_LONG).show();
-                }
-            }) .addOnFailureListener(new OnFailureListener() {
-                @Override
-                public void onFailure(@NonNull Exception e) {
-                    Toast.makeText(getApplicationContext(), "Failed to upload", Toast.LENGTH_LONG).show();
-                }
-            });
+        Date date = Calendar.getInstance().getTime();
+        DateFormat dateFormat = new SimpleDateFormat("yyyymmddhhmmss");
+        lastFull = dateFormat.format(date);
+        StorageReference ref = storageReference.child(lastFull+".jpg");
+        Bitmap imageBitmap = BitmapFactory.decodeFile(currentPath);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        imageBitmap.compress(Bitmap.CompressFormat.JPEG, 100, baos);
+        byte[] bytes = baos.toByteArray();
+        imageView.setImageBitmap(imageBitmap);
+        ref.putBytes(bytes)
+                .addOnSuccessListener(new OnSuccessListener<UploadTask.TaskSnapshot>() {
+                    @Override
+                    public void onSuccess(UploadTask.TaskSnapshot taskSnapshot) {
+                        Toast.makeText(CameraActivity.this, "Image Uploaded", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception exception) {
+                        Toast.makeText(CameraActivity.this, "Upload failed", Toast.LENGTH_LONG).show();
+                    }
+                });
 
-        }
     }
-    private Uri getImageUri(Context context, Bitmap bitmap)
-    {
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG,100,bytes);
-        String path = MediaStore.Images.Media.insertImage(getContentResolver(),bitmap,"title",null);
-        return Uri.parse(path);
-    }
+
 }
